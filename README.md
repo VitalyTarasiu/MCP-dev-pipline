@@ -1,146 +1,99 @@
-# MCP Development Pipeline
+# Multi-Agent Development Pipeline
 
-An AI-powered software development pipeline built with [Microsoft AutoGen](https://github.com/microsoft/autogen). Three autonomous agents collaborate to turn a plain-English product requirement into a merged pull request:
+An AI-powered software development workflow using [Microsoft AutoGen](https://github.com/microsoft/autogen).
 
-| Agent | Role | Model |
-|-------|------|-------|
-| **Product Manager** | Turns requirements into structured Jira tasks | Claude 3.5 Haiku (cheap) |
-| **Developer** | Reads the task, explores the repo, implements changes, creates a PR | Claude 3.5 Haiku (cheap) |
-| **Architect** | Reviews the PR for quality, security and architecture; approves or requests changes | Claude Opus 4 (premium) |
+Three agents collaborate with **independent contexts and models**:
 
-## Pipeline Flow
+| Agent | Model | Role |
+|-------|-------|------|
+| **Product Manager** | gpt-4o-mini | Creates Jira tasks from requirements |
+| **Developer** | gpt-4o-mini | Reads Jira, implements code, creates PRs |
+| **Architect** | gpt-4o | Reviews PRs, approves or requests changes |
+
+## Flow
 
 ```
-User Requirement
-       │
-       ▼
-┌──────────────┐
-│   Product    │  Creates a Jira issue with description
-│   Manager    │  and acceptance criteria
-└──────┬───────┘
-       │
-       ▼
-┌──────────────┐
-│  Developer   │  Reads task → explores repo → creates branch
-│              │  → implements code → creates PR
-└──────┬───────┘
-       │
-       ▼
-┌──────────────┐
-│  Architect   │  Reviews PR diff → approves or requests changes
-└──────┬───────┘
-       │
-  ┌────┴────┐
-  │Approved?│
-  └────┬────┘
-   yes │  no ──► Developer revises ──► Architect re-reviews
-       │
-       ▼
-┌──────────────┐
-│  Developer   │  Merges PR → updates Jira to Done
-└──────────────┘
+User requirement
+    |
+    v
+[PM] Creates Jira task (assigned to configured user)
+    |
+    v
+[Developer] Reads Jira -> explores repo -> implements -> creates PR
+    |
+    v
+[Architect] Reviews PR diff
+    |           |
+    |       CHANGES_REQUESTED
+    |           |
+    |           v
+    |       [Developer] Reads review comments -> pushes fixes
+    |           |
+    |           v
+    |       [Architect] Re-reviews...  (loop up to 5 rounds)
+    |
+    APPROVED
+    |
+    v
+Pipeline complete — PR left open for manual merge
 ```
 
-## Prerequisites
-
-- Python 3.10+
-- An [Anthropic API key](https://console.anthropic.com/)
-- A [Jira API token](https://id.atlassian.com/manage-profile/security/api-tokens)
-- A [GitHub Personal Access Token](https://github.com/settings/tokens) with `repo` scope
+**Key design decisions:**
+- Each agent runs in its **own context** — they communicate only through Jira and GitHub, never through shared conversation history.
+- PRs are **never merged automatically**. The pipeline ends when the architect approves.
+- The architect and developer use **different models** (gpt-4o vs gpt-4o-mini).
 
 ## Setup
 
 ```bash
-# 1. Clone the repository
+# 1. Clone
 git clone https://github.com/VitalyTarasiu/MCP-dev-pipline.git
 cd MCP-dev-pipline
 
-# 2. Create and activate a virtual environment
+# 2. Virtual environment
 python -m venv .venv
-source .venv/bin/activate        # macOS / Linux
-# .venv\Scripts\activate         # Windows
+source .venv/bin/activate
 
 # 3. Install dependencies
 pip install -r requirements.txt
 
-# 4. Configure environment variables
+# 4. (Optional) Pre-fill credentials
 cp .env.example .env
-# Edit .env and fill in your API keys (see below)
+# Edit .env with your API keys
 ```
 
-### Environment Variables
-
-Edit the `.env` file with your credentials:
-
-| Variable | Description |
-|----------|-------------|
-| `ANTHROPIC_API_KEY` | Your Anthropic API key |
-| `JIRA_URL` | Jira instance URL (default: `https://think-up.atlassian.net`) |
-| `JIRA_USER` | Jira username / email |
-| `JIRA_API_TOKEN` | Jira API token ([create one here](https://id.atlassian.com/manage-profile/security/api-tokens)) |
-| `JIRA_PROJECT_KEY` | Jira project key (default: `TUP`) |
-| `GITHUB_TOKEN` | GitHub PAT with `repo` scope |
-| `GITHUB_REPO` | Target repository as `owner/repo` (default: `thinkup-global/api-controller`) |
-| `BASE_BRANCH` | Branch PRs target (default: `dev`) |
-| `DEVELOPER_MODEL` | Model for the developer agent (default: `claude-3-5-haiku-latest`) |
-| `ARCHITECT_MODEL` | Model for the architect agent (default: `claude-opus-4-20250514`) |
-
 ## Usage
-
-### Interactive mode
 
 ```bash
 python main.py
 ```
 
-You will be prompted to type your requirement. Example:
+The CLI will interactively ask for:
+1. **Jira URL** and project key
+2. **GitHub repo** and base branch
+3. **API tokens** (if not already in `.env`)
+4. **Your requirement** (what the PM should create as a task)
 
-```
-Requirement > I want you to add structured logging to the authentication module
-```
-
-### Command-line mode
-
-```bash
-python main.py "Add a health-check endpoint that returns service status and version"
-```
-
-### What happens
-
-1. The **Product Manager** creates a Jira issue in your project with a clear description and acceptance criteria.
-2. The **Developer** reads the Jira task, explores the repository, creates a feature branch, implements the changes, and opens a Pull Request.
-3. The **Architect** reviews the PR diff. If the code is good, it approves and hands back to the developer to merge. If changes are needed, it sends feedback and the developer revises.
-4. Once approved, the **Developer** merges the PR and marks the Jira issue as Done.
-
-All progress is streamed to the terminal in real time.
+Values are saved to `.env` for future runs.
 
 ## Project Structure
 
 ```
-MCP-dev-pipline/
-├── main.py                    # CLI entry point
-├── config.py                  # Loads .env configuration
-├── requirements.txt           # Python dependencies
-├── .env.example               # Template for environment variables
+├── main.py                  # Interactive CLI entry point
+├── config.py                # Environment configuration
+├── pipeline/
+│   └── dev_pipeline.py      # Agent orchestration with review loop
 ├── tools/
-│   ├── jira_tools.py          # Jira API: create issues, update status, comment
-│   └── github_tools.py        # GitHub API: branches, files, PRs, reviews, merge
-└── pipeline/
-    └── dev_pipeline.py        # AutoGen multi-agent orchestration
+│   ├── jira_tools.py        # Jira API: create issues, comments
+│   └── github_tools.py      # GitHub API: branches, files, PRs, reviews
+├── requirements.txt
+├── .env.example
+└── README.md
 ```
 
-## Customisation
+## Requirements
 
-- **Change models**: Edit `DEVELOPER_MODEL` / `ARCHITECT_MODEL` / `PM_MODEL` in `.env`.
-- **Change target repo**: Edit `GITHUB_REPO` and `BASE_BRANCH` in `.env`.
-- **Change Jira project**: Edit `JIRA_PROJECT_KEY` in `.env`.
-- **Adjust review rounds**: The pipeline allows up to 50 messages (configurable via `MaxMessageTermination` in `dev_pipeline.py`).
-
-## Troubleshooting
-
-| Problem | Solution |
-|---------|----------|
-| `Error creating Jira issue` | Verify `JIRA_API_TOKEN` is valid. SSO users must create an API token, not use their password. |
-| `Error creating branch` | Ensure `GITHUB_TOKEN` has `repo` scope and the `BASE_BRANCH` exists. |
-| `401 Unauthorized` on GitHub | Regenerate your PAT and update `.env`. |
-| Model errors | Verify `ANTHROPIC_API_KEY` is set and the model names are correct for your Anthropic account. |
+- Python 3.11+
+- OpenAI API key
+- Jira API token ([generate here](https://id.atlassian.com/manage-profile/security/api-tokens))
+- GitHub personal access token with `repo` scope

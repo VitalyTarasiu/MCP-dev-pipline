@@ -16,12 +16,28 @@ def _get_jira() -> Jira:
     return _jira_client
 
 
-def create_jira_issue(summary: str, description: str, issue_type: str = "Task") -> str:
-    """Create a new Jira issue in the configured project.
+def _find_assignee_account_id(jira: Jira) -> str | None:
+    """Look up the Jira account ID for the configured user."""
+    try:
+        me = jira.myself()
+        return me.get("accountId")
+    except Exception:
+        pass
+    return None
+
+
+def create_jira_issue(
+    summary: str,
+    description: str,
+    acceptance_criteria: str = "",
+    issue_type: str = "Task",
+) -> str:
+    """Create a new Jira issue, assign it to the configured user.
 
     Args:
-        summary: Brief title for the issue (e.g. 'Add logging to authentication module')
-        description: Detailed description with acceptance criteria
+        summary: Brief title for the issue.
+        description: Detailed description of the work.
+        acceptance_criteria: Definition-of-done checklist (appended to description).
         issue_type: Issue type name - Task, Story, or Bug. Defaults to Task.
 
     Returns:
@@ -29,16 +45,29 @@ def create_jira_issue(summary: str, description: str, issue_type: str = "Task") 
     """
     try:
         jira = _get_jira()
-        result = jira.issue_create(
-            fields={
-                "project": {"key": config.JIRA_PROJECT_KEY},
-                "summary": summary,
-                "description": description,
-                "issuetype": {"name": issue_type},
-            }
-        )
+        full_description = description
+        if acceptance_criteria:
+            full_description += f"\n\n*Acceptance Criteria:*\n{acceptance_criteria}"
+
+        fields: dict = {
+            "project": {"key": config.JIRA_PROJECT_KEY},
+            "summary": summary,
+            "description": full_description,
+            "issuetype": {"name": issue_type},
+        }
+
+        account_id = _find_assignee_account_id(jira)
+        if account_id:
+            fields["assignee"] = {"accountId": account_id}
+
+        result = jira.issue_create(fields=fields)
         issue_key = result["key"]
-        return f"Created Jira issue: {issue_key}\nURL: {config.JIRA_URL}/browse/{issue_key}"
+        assigned = config.JIRA_USER if account_id else "could not assign"
+        return (
+            f"Created Jira issue: {issue_key}\n"
+            f"URL: {config.JIRA_URL}/browse/{issue_key}\n"
+            f"Assigned to: {assigned}"
+        )
     except Exception as e:
         return f"Error creating Jira issue: {e}"
 
@@ -50,7 +79,7 @@ def get_jira_issue(issue_key: str) -> str:
         issue_key: The Jira issue key (e.g. 'TUP-123')
 
     Returns:
-        JSON string with issue details including summary, description, status, and assignee.
+        JSON string with issue details.
     """
     try:
         jira = _get_jira()
@@ -72,30 +101,12 @@ def get_jira_issue(issue_key: str) -> str:
         return f"Error getting Jira issue: {e}"
 
 
-def update_jira_issue_status(issue_key: str, status_name: str) -> str:
-    """Transition a Jira issue to a new status.
-
-    Args:
-        issue_key: The Jira issue key (e.g. 'TUP-123')
-        status_name: Target status name (e.g. 'In Progress', 'In Review', 'Done')
-
-    Returns:
-        Confirmation message or error.
-    """
-    try:
-        jira = _get_jira()
-        jira.issue_transition(issue_key, status_name)
-        return f"Updated {issue_key} status to: {status_name}"
-    except Exception as e:
-        return f"Error updating issue status: {e}"
-
-
 def add_jira_comment(issue_key: str, comment: str) -> str:
     """Add a comment to a Jira issue.
 
     Args:
         issue_key: The Jira issue key (e.g. 'TUP-123')
-        comment: The comment text to add
+        comment: The comment text to add.
 
     Returns:
         Confirmation message or error.

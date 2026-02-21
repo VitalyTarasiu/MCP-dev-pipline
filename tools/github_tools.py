@@ -25,7 +25,8 @@ def get_repo_tree(path: str = "") -> str:
     """
     try:
         repo = _get_repo()
-        contents = repo.get_contents(path, ref=config.BASE_BRANCH)
+        ref = _last_branch or config.BASE_BRANCH
+        contents = repo.get_contents(path, ref=ref)
         if not isinstance(contents, list):
             contents = [contents]
         result = []
@@ -42,14 +43,14 @@ def get_file_content(file_path: str, branch: str = "") -> str:
 
     Args:
         file_path: Path to the file in the repository.
-        branch: Branch to read from. Uses the configured base branch if empty.
+        branch: Branch to read from. Defaults to feature branch or base branch.
 
     Returns:
         The file content as a string.
     """
     try:
         repo = _get_repo()
-        ref = branch or config.BASE_BRANCH
+        ref = branch or _last_branch or config.BASE_BRANCH
         content = repo.get_contents(file_path, ref=ref)
         if isinstance(content, list):
             return f"Error: {file_path} is a directory, not a file"
@@ -79,6 +80,7 @@ def create_branch(branch_name: str) -> str:
         return f"Created branch: {branch_name} (from {config.BASE_BRANCH})"
     except GithubException as e:
         if e.status == 422:
+            _last_branch = branch_name
             return f"Branch '{branch_name}' already exists — will use it"
         return f"Error creating branch: {e}"
     except Exception as e:
@@ -92,9 +94,9 @@ def create_or_update_file(
 
     Args:
         file_path: Path where the file should be created or updated.
-        content: The full file content to write.
+        content: The COMPLETE file content to write.
         commit_message: Git commit message. Defaults to 'Update <file_path>'.
-        branch: Branch to commit to. Defaults to the last branch created by create_branch.
+        branch: Branch to commit to. Defaults to the last created branch.
 
     Returns:
         Confirmation message with commit details.
@@ -135,7 +137,7 @@ def create_pull_request(title: str, body: str, head_branch: str = "") -> str:
     Args:
         title: PR title (should include the Jira issue key).
         body: PR description in markdown.
-        head_branch: Source branch name. Defaults to the last branch created by create_branch.
+        head_branch: Source branch name. Defaults to the last created branch.
 
     Returns:
         The PR number and URL.
@@ -206,12 +208,65 @@ def get_pr_files(pr_number: int) -> str:
         return f"Error getting PR files: {e}"
 
 
+def get_pr_reviews(pr_number: int) -> str:
+    """Get all reviews submitted on a pull request.
+
+    Args:
+        pr_number: The pull request number.
+
+    Returns:
+        Formatted list of reviews with reviewer, state, and body.
+    """
+    try:
+        repo = _get_repo()
+        pr = repo.get_pull(pr_number)
+        reviews = list(pr.get_reviews())
+        if not reviews:
+            return "No reviews on this PR yet."
+        result = []
+        for r in reviews:
+            result.append(f"Reviewer: {r.user.login}")
+            result.append(f"State: {r.state}")
+            result.append(f"Body: {r.body}")
+            result.append("---")
+        return "\n".join(result)
+    except Exception as e:
+        return f"Error getting PR reviews: {e}"
+
+
+def get_pr_review_comments(pr_number: int) -> str:
+    """Get inline review comments on a pull request.
+
+    Args:
+        pr_number: The pull request number.
+
+    Returns:
+        Formatted list of inline comments with file, line, and body.
+    """
+    try:
+        repo = _get_repo()
+        pr = repo.get_pull(pr_number)
+        comments = list(pr.get_review_comments())
+        if not comments:
+            return "No inline review comments on this PR."
+        result = []
+        for c in comments:
+            result.append(f"File: {c.path}")
+            result.append(f"Line: {c.position}")
+            result.append(f"Author: {c.user.login}")
+            result.append(f"Body: {c.body}")
+            result.append("---")
+        return "\n".join(result)
+    except Exception as e:
+        return f"Error getting review comments: {e}"
+
+
 def add_pr_review(pr_number: int, body: str, event: str = "COMMENT") -> str:
     """Add a review to a pull request.
 
     Args:
         pr_number: The pull request number.
-        body: Review comment body.
+        body: Review comment body with detailed feedback.
         event: Review event type - COMMENT, REQUEST_CHANGES, or APPROVE.
 
     Returns:
@@ -244,23 +299,4 @@ def approve_pull_request(
         pr.create_review(body=body, event="APPROVE")
         return f"Approved PR #{pr_number}"
     except Exception as e:
-        return f"Error approving PR: {e}"
-
-
-def merge_pull_request(pr_number: int, merge_method: str = "squash") -> str:
-    """Merge an approved pull request.
-
-    Args:
-        pr_number: The pull request number.
-        merge_method: Merge strategy - 'merge', 'squash', or 'rebase'. Defaults to 'squash'.
-
-    Returns:
-        Confirmation message with merge details.
-    """
-    try:
-        repo = _get_repo()
-        pr = repo.get_pull(pr_number)
-        result = pr.merge(merge_method=merge_method)
-        return f"Merged PR #{pr_number} via {merge_method} (SHA: {result.sha[:8]})"
-    except Exception as e:
-        return f"Error merging PR: {e}"
+        return f"Error approving PR (may be self-approval restriction): {e}"
