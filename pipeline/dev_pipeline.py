@@ -246,7 +246,7 @@ async def run_pipeline(requirement: str) -> None:
     print(f"\n  >>> PR: #{pr_number}")
 
     # ========== Phase 3: Review loop ==========
-    max_rounds = 5
+    max_rounds = 3
     for round_num in range(1, max_rounds + 1):
         # --- Architect reviews (fresh agent = independent context) ---
         print(f"\n{'=' * 58}")
@@ -281,8 +281,16 @@ async def run_pipeline(requirement: str) -> None:
         )
         arch_result = await Console(arch_team.run_stream(task=arch_task))
 
-        last = _last_text(arch_result.messages).upper()
-        if "APPROVED" in last:
+        # Print the architect's review comment
+        arch_comment = _last_text(arch_result.messages)
+        print(f"\n  {'─' * 54}")
+        print(f"  Architect Review (round {round_num}):")
+        print(f"  {'─' * 54}")
+        for line in arch_comment.strip().split("\n"):
+            print(f"  {line}")
+        print(f"  {'─' * 54}")
+
+        if "APPROVED" in arch_comment.upper():
             print(f"\n  >>> PR #{pr_number} APPROVED by architect")
             break
 
