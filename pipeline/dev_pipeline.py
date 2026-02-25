@@ -16,10 +16,10 @@ import re
 from autogen_agentchat.agents import AssistantAgent
 from autogen_agentchat.conditions import TextMentionTermination, MaxMessageTermination
 from autogen_agentchat.teams import RoundRobinGroupChat
-from autogen_agentchat.ui import Console
 from autogen_ext.models.openai import OpenAIChatCompletionClient
 
 from config import get_config
+from pipeline.ui import PipelineUI, pretty_console, PM, DEV, ARCH, FIX
 from tools.jira_tools import create_jira_issue, get_jira_issue, add_jira_comment
 from tools.github_tools import (
     get_repo_tree,
@@ -168,6 +168,7 @@ async def run_pipeline(requirement: str) -> None:
     """Run the full development pipeline with independent agent contexts."""
 
     cfg = get_config()
+    ui  = PipelineUI()
 
     def _dev_client():
         return OpenAIChatCompletionClient(model=cfg.DEVELOPER_MODEL, api_key=cfg.OPENAI_API_KEY)
@@ -178,11 +179,12 @@ async def run_pipeline(requirement: str) -> None:
     def _pm_client():
         return OpenAIChatCompletionClient(model=cfg.PM_MODEL, api_key=cfg.OPENAI_API_KEY)
 
+    # ── Show header and architecture ──────────────────────────
+    ui.show_header(cfg.JIRA_URL, cfg.GITHUB_REPO, cfg.BASE_BRANCH, cfg.JIRA_USER)
+    ui.show_architecture()
+
     # ========== Phase 1: PM creates Jira task ==========
-    print(f"\n{'=' * 58}")
-    print(f"  Phase 1 -- Product Manager creating Jira task")
-    print(f"  Model: {cfg.PM_MODEL}")
-    print(f"{'=' * 58}\n")
+    ui.phase_start(PM, cfg.PM_MODEL)
 
     pm = AssistantAgent(
         name="product_manager",
@@ -194,19 +196,18 @@ async def run_pipeline(requirement: str) -> None:
         participants=[pm],
         termination_condition=TextMentionTermination("PHASE_COMPLETE") | MaxMessageTermination(20),
     )
-    pm_result = await Console(pm_team.run_stream(task=requirement))
+    pm_result = await pretty_console(pm_team.run_stream(task=requirement), ui)
 
     jira_key = _search_messages(pm_result.messages, r"([A-Z]+-\d+)")
     if not jira_key:
-        print("\n  ERROR: Could not extract Jira issue key. Aborting.")
+        print(f"\n  \033[91mERROR: Could not extract Jira issue key. Aborting.\033[0m")
         return
-    print(f"\n  >>> Jira issue: {jira_key}")
+
+    ui.phase_end(PM)
+    ui.context_arrow("Jira ticket created", f"{jira_key}  ({cfg.JIRA_URL}/browse/{jira_key})")
 
     # ========== Phase 2: Developer implements & creates PR ==========
-    print(f"\n{'=' * 58}")
-    print(f"  Phase 2 -- Developer implementing changes")
-    print(f"  Model: {cfg.DEVELOPER_MODEL} (independent context)")
-    print(f"{'=' * 58}\n")
+    ui.phase_start(DEV, cfg.DEVELOPER_MODEL)
 
     dev_task = (
         f"Read Jira ticket {jira_key} and implement the required changes.\n"
@@ -233,26 +234,29 @@ async def run_pipeline(requirement: str) -> None:
         participants=[dev],
         termination_condition=TextMentionTermination("PHASE_COMPLETE") | MaxMessageTermination(60),
     )
-    dev_result = await Console(dev_team.run_stream(task=dev_task))
+    dev_result = await pretty_console(dev_team.run_stream(task=dev_task), ui)
 
     pr_number_str = (
         _search_messages(dev_result.messages, r"PR #(\d+)")
         or _search_messages(dev_result.messages, r"pull/(\d+)")
     )
     if not pr_number_str:
-        print("\n  ERROR: Could not extract PR number. Aborting.")
+        print(f"\n  \033[91mERROR: Could not extract PR number. Aborting.\033[0m")
         return
     pr_number = int(pr_number_str)
-    print(f"\n  >>> PR: #{pr_number}")
+
+    ui.phase_end(DEV)
+    ui.context_arrow(
+        "Pull Request created",
+        f"PR #{pr_number}  (https://github.com/{cfg.GITHUB_REPO}/pull/{pr_number})",
+    )
 
     # ========== Phase 3: Review loop ==========
     max_rounds = 3
     for round_num in range(1, max_rounds + 1):
-        # --- Architect reviews (fresh agent = independent context) ---
-        print(f"\n{'=' * 58}")
-        print(f"  Phase 3.{round_num}a -- Architect reviewing PR #{pr_number}")
-        print(f"  Model: {cfg.ARCHITECT_MODEL} (independent context)")
-        print(f"{'=' * 58}\n")
+
+        # --- 3a: Architect reviews ---
+        ui.phase_start(ARCH, cfg.ARCHITECT_MODEL, round_num=round_num)
 
         arch_task = (
             f"Review Pull Request #{pr_number} on the repository.\n"
@@ -279,30 +283,24 @@ async def run_pipeline(requirement: str) -> None:
                 | MaxMessageTermination(30)
             ),
         )
-        arch_result = await Console(arch_team.run_stream(task=arch_task))
+        arch_result = await pretty_console(arch_team.run_stream(task=arch_task), ui)
 
-        # Print the architect's review comment
         arch_comment = _last_text(arch_result.messages)
-        print(f"\n  {'─' * 54}")
-        print(f"  Architect Review (round {round_num}):")
-        print(f"  {'─' * 54}")
-        for line in arch_comment.strip().split("\n"):
-            print(f"  {line}")
-        print(f"  {'─' * 54}")
+        approved = "APPROVED" in arch_comment.upper()
 
-        if "APPROVED" in arch_comment.upper():
-            print(f"\n  >>> PR #{pr_number} APPROVED by architect")
+        ui.phase_end(ARCH)
+        ui.review_verdict(arch_comment, approved)
+
+        if approved:
             break
 
         if round_num == max_rounds:
-            print(f"\n  WARNING: Max review rounds ({max_rounds}) reached.")
+            print(f"\n  \033[93mWARNING: Max review rounds ({max_rounds}) reached.\033[0m\n")
             break
 
-        # --- Developer fixes (fresh agent = independent context) ---
-        print(f"\n{'=' * 58}")
-        print(f"  Phase 3.{round_num}b -- Developer fixing review comments")
-        print(f"  Model: {cfg.DEVELOPER_MODEL} (independent context)")
-        print(f"{'=' * 58}\n")
+        # --- 3b: Developer fixes ---
+        ui.context_arrow("Review feedback", "CHANGES REQUESTED — Developer will fix")
+        ui.phase_start(FIX, cfg.DEVELOPER_MODEL, round_num=round_num)
 
         fix_task = (
             f"Read the review comments on PR #{pr_number}.\n"
@@ -327,12 +325,10 @@ async def run_pipeline(requirement: str) -> None:
             participants=[dev_fix],
             termination_condition=TextMentionTermination("PHASE_COMPLETE") | MaxMessageTermination(60),
         )
-        await Console(dev_fix_team.run_stream(task=fix_task))
+        await pretty_console(dev_fix_team.run_stream(task=fix_task), ui)
+
+        ui.phase_end(FIX)
+        ui.context_arrow("Fixes pushed", f"PR #{pr_number} updated — back to Architect Review")
 
     # ========== Summary ==========
-    print(f"\n{'=' * 58}")
-    print(f"  Pipeline Complete")
-    print(f"  Jira : {cfg.JIRA_URL}/browse/{jira_key}")
-    print(f"  PR   : https://github.com/{cfg.GITHUB_REPO}/pull/{pr_number}")
-    print(f"  Status: PR is open -- NOT merged (manual merge required)")
-    print(f"{'=' * 58}\n")
+    ui.show_summary(cfg.JIRA_URL, jira_key, cfg.GITHUB_REPO, pr_number)
